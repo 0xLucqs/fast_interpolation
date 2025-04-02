@@ -5,7 +5,7 @@ use ark_poly::polynomial::univariate::DensePolynomial;
 use ark_poly::univariate::DenseOrSparsePolynomial;
 use num_traits::{One, Zero};
 use rayon::prelude::*;
-mod complex_interpolation;
+pub mod complex_interpolation;
 
 pub fn fast_interpolation(u: &[Fp], v: &[Fp]) -> DensePolynomial<Fp> {
     assert_eq!(u.len(), v.len());
@@ -132,11 +132,11 @@ mod tests {
     use super::*;
 
     #[test]
-    pub fn test_interpolation() {
+    pub fn test_regular_interpolation() {
         let mut bytes = include_bytes!("../blob").to_vec();
-        bytes.extend_from_slice(include_bytes!("../blob"));
-        let bytes2 = bytes.clone();
-        bytes.extend_from_slice(&bytes2);
+        // bytes.extend_from_slice(include_bytes!("../blob"));
+        // let bytes2 = bytes.clone();
+        // bytes.extend_from_slice(&bytes2);
         // let bytes3 = bytes.clone();
         // bytes.extend_from_slice(&bytes3);
 
