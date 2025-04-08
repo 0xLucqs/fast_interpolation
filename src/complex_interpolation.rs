@@ -90,7 +90,6 @@ pub fn interpolate_cm31(
     println!("N = {}", n);
     println!("{} evals", f_values.len());
     println!("packing");
-
     let re_col = f_values.iter().map(|x| x.value()[0]).collect::<Vec<_>>();
 
     let im_col = f_values.iter().map(|x| x.value()[1]).collect::<Vec<_>>();
