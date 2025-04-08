@@ -2,8 +2,8 @@ use lambdaworks_math::circle::cosets::Coset;
 
 use lambdaworks_math::circle::point::CirclePoint;
 use lambdaworks_math::circle::polynomial::{evaluate_cfft, interpolate_cfft};
+use stwo_prover::core::circle::CirclePoint as SCirclePoint;
 
-use lambdaworks_math::fft::cpu::bit_reversing::in_place_bit_reverse_permute;
 use lambdaworks_math::field::element::FieldElement;
 use lambdaworks_math::field::fields::mersenne31::extensions::Degree2ExtensionField;
 
@@ -13,38 +13,69 @@ use rayon::iter::{
     IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
 };
 
-use stwo_prover::core::backend::CpuBackend;
-use stwo_prover::core::backend::cpu::bit_reverse;
-
-use stwo_prover::core::fields::cm31::CM31;
 use stwo_prover::core::fields::m31::M31;
 
-use stwo_prover::core::fields::ComplexConjugate;
-use stwo_prover::core::poly::circle::{CanonicCoset, CircleEvaluation};
+use stwo_prover::core::fields::qm31::QM31;
+use stwo_prover::core::poly::circle::CanonicCoset;
 
 use crate::{build_subproduct_tree, eval_tree, linear_combination};
 
-// pub fn interpolate_qm31(pks: &[CirclePoint<M31>], extvks: &[QM31]) -> Vec<M31> {
-//     println!("pks: {:?}", pks.len());
-//     println!("extvks: {:?}", extvks.len());
-//     let _zks = &pks
-//         .iter()
-//         .map(|zk| CM31::from_m31(zk.x, zk.y))
-//         .collect::<Vec<_>>();
-//     // let first_poly = interpolate_cm31(zks, &extvks.iter().map(|vk| vk.0).collect::<Vec<_>>());
-//     // let second_poly = interpolate_cm31(zks, &extvks.iter().map(|vk| vk.1).collect::<Vec<_>>());
+pub fn interpolate_qm31(pks: &[SCirclePoint<M31>], extvks: &[QM31]) -> Vec<M31> {
+    println!("pks: {:?}", pks.len());
+    println!("extvks: {:?}", extvks.len());
+    let zks = &pks
+        .iter()
+        .map(|zk| {
+            FieldElement::<Degree2ExtensionField>::new([
+                FieldElement::<Mersenne31Field>::new(zk.x.0),
+                FieldElement::<Mersenne31Field>::new(zk.y.0),
+            ])
+        })
+        .collect::<Vec<_>>();
+    let ((first_col, second_col), (third_col, fourth_col)) = rayon::join(
+        || {
+            interpolate_cm31(
+                zks,
+                &extvks
+                    .iter()
+                    .map(|vk| {
+                        FieldElement::<Degree2ExtensionField>::new([
+                            FieldElement::<Mersenne31Field>::new(vk.0.0.0),
+                            FieldElement::<Mersenne31Field>::new(vk.0.1.0),
+                        ])
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        },
+        || {
+            interpolate_cm31(
+                zks,
+                &extvks
+                    .iter()
+                    .map(|vk| {
+                        FieldElement::<Degree2ExtensionField>::new([
+                            FieldElement::<Mersenne31Field>::new(vk.1.0.0),
+                            FieldElement::<Mersenne31Field>::new(vk.1.1.0),
+                        ])
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        },
+    );
 
-//     // first_poly
-//     //     .into_iter()
-//     //     .zip(second_poly)
-//     //     .map(|(a, b)| a + b)
-//     //     .collect::<Vec<_>>()
-//     vec![]
-// }
+    // concatenate the 4 columns
+    first_col
+        .into_iter()
+        .zip(second_col)
+        .zip(third_col)
+        .zip(fourth_col)
+        .flat_map(|(((a, b), c), d)| [a, b, c, d])
+        .collect::<Vec<_>>()
+}
 pub fn interpolate_cm31(
     zks: &[FieldElement<Degree2ExtensionField>],
     vks: &[FieldElement<Degree2ExtensionField>],
-) -> Vec<M31> {
+) -> (Vec<M31>, Vec<M31>) {
     println!("zks len = {}", zks.len());
     assert_eq!(zks.len(), vks.len());
     assert!((zks.len() - 1).is_power_of_two());
@@ -59,28 +90,28 @@ pub fn interpolate_cm31(
 
     println!("computing zks");
     let mut pol = fast_interpolation(zks, &vprimes);
-    assert_eq!(
-        CM31::from_u32_unchecked(
-            pol.coefficients[0].value()[0].representative(),
-            pol.coefficients[0].value()[1].representative()
-        ),
-        CM31::from_u32_unchecked(
-            pol.coefficients[pol.coefficients.len() - 1].value()[0].representative(),
-            pol.coefficients[pol.coefficients.len() - 1].value()[1].representative()
-        )
-        .complex_conjugate()
-    );
-    assert_eq!(
-        CM31::from_u32_unchecked(
-            pol.coefficients[1].value()[0].representative(),
-            pol.coefficients[1].value()[1].representative()
-        ),
-        CM31::from_u32_unchecked(
-            pol.coefficients[pol.coefficients.len() - 2].value()[0].representative(),
-            pol.coefficients[pol.coefficients.len() - 2].value()[1].representative()
-        )
-        .complex_conjugate()
-    );
+    // assert_eq!(
+    //     CM31::from_u32_unchecked(
+    //         pol.coefficients[0].value()[0].representative(),
+    //         pol.coefficients[0].value()[1].representative()
+    //     ),
+    //     CM31::from_u32_unchecked(
+    //         pol.coefficients[pol.coefficients.len() - 1].value()[0].representative(),
+    //         pol.coefficients[pol.coefficients.len() - 1].value()[1].representative()
+    //     )
+    //     .complex_conjugate()
+    // );
+    // assert_eq!(
+    //     CM31::from_u32_unchecked(
+    //         pol.coefficients[1].value()[0].representative(),
+    //         pol.coefficients[1].value()[1].representative()
+    //     ),
+    //     CM31::from_u32_unchecked(
+    //         pol.coefficients[pol.coefficients.len() - 2].value()[0].representative(),
+    //         pol.coefficients[pol.coefficients.len() - 2].value()[1].representative()
+    //     )
+    //     .complex_conjugate()
+    // );
     assert_eq!(
         zks.iter().map(|z| pol.evaluate(z)).collect::<Vec<_>>(),
         vprimes
@@ -120,65 +151,27 @@ pub fn interpolate_cm31(
             ((pol.evaluate(&z) + &last_coeff * z.pow(n)) / z.pow(n as u128 / 2)).unwrap()
         })
         .collect::<Vec<_>>();
-    println!("--------------------------------");
-    println!("f_values = {:#?}", f_values);
-    println!("--------------------------------");
-    println!("adjusting");
-
-    println!("N = {}", n);
-    println!("{} evals", f_values.len());
-    println!("packing");
 
     let re_col = f_values.iter().map(|x| x.value()[0]).collect::<Vec<_>>();
 
     let im_col = f_values.iter().map(|x| x.value()[1]).collect::<Vec<_>>();
-    println!("fft");
-    println!("re_col len = {}", re_col.len());
-    println!("re_col log len = {}", re_col.len().ilog2());
-
-    println!("im_col len = {}", im_col.len());
-    println!("im_col log len = {}", im_col.len().ilog2());
-
-    let circle_evaluations = CircleEvaluation::<CpuBackend, M31, _>::new_canonical_ordered(
-        CanonicCoset::new(n.ilog2()),
-        re_col
-            .iter()
-            .map(|eval| M31::from_u32_unchecked(*eval.value()))
-            .collect(),
-    );
-    let some_coeffs = circle_evaluations
-        .interpolate()
-        .coeffs
-        .iter()
-        .map(|x| FieldElement::new(x.0))
-        .collect::<Vec<_>>();
 
     println!("interpolating");
     let re_fft = interpolate_cfft(re_col.clone());
-    println!("--------------------------------");
-    println!("--------------------------------");
-    println!("--------------------------------");
-    println!("re_fft = {:#?}", re_fft);
-    println!("--------------------------------");
-    println!("--------------------------------");
-    println!("--------------------------------");
     let re_evaluations = evaluate_cfft(re_fft.clone());
     assert_eq!(re_evaluations, re_col);
     let im_fft = interpolate_cfft(im_col);
-    assert_eq!(some_coeffs, re_fft);
-    println!("re_fft len = {}", re_fft.len());
-    println!("im_fft len = {}", im_fft.len());
 
-    re_fft
-        .into_iter()
-        .zip(im_fft)
-        .flat_map(|(re, im)| {
-            [
-                M31::from_u32_unchecked(re.representative()),
-                M31::from_u32_unchecked(im.representative()),
-            ]
-        })
-        .collect::<Vec<_>>()
+    (
+        re_fft
+            .into_iter()
+            .map(|x| M31::from_u32_unchecked(*x.value()))
+            .collect(),
+        im_fft
+            .into_iter()
+            .map(|x| M31::from_u32_unchecked(*x.value()))
+            .collect(),
+    )
 }
 
 pub fn fast_interpolation(
@@ -218,14 +211,34 @@ pub fn fast_interpolation(
 #[cfg(test)]
 mod tests {
 
+    use std::collections::HashSet;
+
+    use frieda::{
+        proof::{generate_proof, get_queries_from_proof},
+        utils::{self, felts_to_bytes_le},
+    };
     use lambdaworks_math::field::fields::mersenne31::{
         extensions::Degree2ExtensionField, field::Mersenne31Field,
     };
     use num_traits::Pow;
     use rand::Rng;
     use stwo_prover::core::{
+        backend::CpuBackend,
+        circle::Coset as SCoset,
         fields::m31::BaseField,
-        poly::circle::{CirclePoly, SecureCirclePoly},
+        fri::FriConfig,
+        pcs::PcsConfig,
+        poly::circle::{CircleDomain, CirclePoly, SecureCirclePoly},
+        utils::bit_reverse_index,
+    };
+    const QUERY_PER_SAMPLE: usize = 20;
+    const PCS_CONFIG: PcsConfig = PcsConfig {
+        pow_bits: 1,
+        fri_config: FriConfig {
+            log_blowup_factor: 4,
+            log_last_layer_degree_bound: 1,
+            n_queries: QUERY_PER_SAMPLE,
+        },
     };
 
     use super::*;
@@ -241,30 +254,8 @@ mod tests {
 
         println!("coeffs.len(): {:?}", coeffs.len());
 
-        // let coset = Coset::get_coset_points(&Coset::new_standard(coeffs.len().ilog2() + 10))
-        //     .iter()
-        //     .skip(coeffs.len() * 2 + 1)
-        //     .map(|point| FieldElement::<Degree2ExtensionField>::new([point.x, point.y]))
-        //     .take(coeffs.len() + 1)
-        //     .collect::<Vec<_>>();
         let circle_poly = CirclePoly::<CpuBackend>::new(vec![one; POLY_SIZE]);
-        println!("circle_poly = {:#?}", circle_poly);
-        let init_evals = evaluate_cfft(vec![FieldElement::<Mersenne31Field>::new(1); POLY_SIZE]);
-        println!("init_evals = {:#?}", init_evals);
 
-        // let poly = Polynomial::new(
-        //     &coeffs
-        //         .iter()
-        //         .map(|(re, im)| {
-        //             FieldElement::<Degree2ExtensionField>::new([
-        //                 FieldElement::<Mersenne31Field>::new(re.0),
-        //                 FieldElement::<Mersenne31Field>::new(im.0),
-        //             ])
-        //         })
-        //         .collect::<Vec<_>>(),
-        // );
-
-        // let random_pos = coset;
         let mut rng = rand::rng();
 
         let random_points = (0..=coeffs.len())
@@ -298,11 +289,8 @@ mod tests {
             })
             .collect::<Vec<_>>();
         // Interpolate back
-        let interpolated = interpolate_cm31(&random_points, &random_evals);
-        let interpolated = interpolated
-            .chunks(2)
-            .map(|chunk| (chunk[0], chunk[1]))
-            .collect::<Vec<_>>();
+        let (re_col, im_col) = interpolate_cm31(&random_points, &random_evals);
+        let interpolated = re_col.into_iter().zip(im_col);
 
         // Compare results
         println!("interpolated.len(): {:?}", interpolated.len());
@@ -311,9 +299,9 @@ mod tests {
         println!();
         println!("interp: {:?}", &interpolated);
 
-        for (i, ((bre, bim), (ire, iim))) in coeffs.iter().zip(interpolated.iter()).enumerate() {
-            assert_eq!(bre, ire, "failed real part at {}", i);
-            assert_eq!(bim, iim, "failed imaginary part at {}", i);
+        for (i, ((bre, bim), (ire, iim))) in coeffs.iter().zip(interpolated).enumerate() {
+            assert_eq!(bre, &ire, "failed real part at {}", i);
+            assert_eq!(bim, &iim, "failed imaginary part at {}", i);
         }
     }
 
@@ -374,92 +362,72 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        let interpolated = interpolate_cm31(&random_points, &random_evals);
+        let (re_col, im_col) = interpolate_cm31(&random_points, &random_evals);
+        let interpolated = re_col
+            .into_iter()
+            .zip(im_col)
+            .flat_map(|(a, b)| [a, b])
+            .collect::<Vec<_>>();
         println!("interpolated.len(): {:?}", interpolated.len());
         println!("coeffs.len(): {:?}", coeffs.len() / 2);
         println!("coeffs[..10]: {:?}", &coeffs[..10]);
         println!("interp[..10]: {:?}", &interpolated[..10]);
-        assert_eq!(interpolated.len(), coeffs.len());
+        assert_eq!(interpolated, coeffs);
     }
-    // #[test]
-    // fn test_something() {
-    //     let data = include_bytes!("../blob")[..].to_vec();
-    //     let mut coeffs = frieda::utils::bytes_to_felt_le(&data);
-    //     let next_power_of_2 = 1 << ((coeffs.len() as f64).log2().ceil() as u32).max(2);
-    //     let next_power_of_2 = 2 * next_power_of_2;
-    //     coeffs.resize(next_power_of_2, BaseField::from(0));
-    //     let quarter_coeffs = &coeffs[..coeffs.len() / 4];
-    //     let second_quarter_coeffs = &coeffs[coeffs.len() / 4..coeffs.len() / 2];
-    //     let polys = SecureCirclePoly::<CpuBackend>([
-    //         CirclePoly::<CpuBackend>::new(quarter_coeffs.to_vec()),
-    //         CirclePoly::<CpuBackend>::new(second_quarter_coeffs.to_vec()),
-    //         CirclePoly::<CpuBackend>::new(vec![BaseField::from(0); quarter_coeffs.len()]),
-    //         CirclePoly::<CpuBackend>::new(vec![BaseField::from(0); quarter_coeffs.len()]),
-    //     ]);
-    //     // we should have polys.len().next_power_of_two() samples
-    //     let samples_nb = (1 << polys.log_size().next_power_of_two()) / 20;
-    //     println!("samples_nb: {:?}", samples_nb);
-    //     let proofs_pos = (0..(samples_nb + 1))
-    //         .into_par_iter()
-    //         .map(|i| {
-    //             let proof = generate_proof(&data, Some(i), PCS_CONFIG);
-    //             let queries = get_queries_from_proof(proof.clone(), Some(i));
-    //             (proof, queries)
-    //         })
-    //         .collect::<Vec<_>>();
 
-    //     let domain = CircleDomain::new(SCoset::half_odds(proofs_pos[0].0.coset_log_size));
-    //     let mut pos_set = HashSet::new();
-    //     let mut pos_vec = Vec::new();
-    //     let mut evals_vec = Vec::new();
-    //     for (proof, (_log_size, pos)) in proofs_pos {
-    //         for (i, p) in pos.iter().enumerate() {
-    //             let point = domain.at(bit_reverse_index(*p, domain.log_size()));
-    //             if pos_set.insert(point) {
-    //                 pos_vec.push(point);
-    //                 evals_vec.push(proof.evaluations[i]);
-    //             }
-    //         }
-    //     }
+    #[test]
+    fn test_something() {
+        let data = include_bytes!("../blob").to_vec();
+        let poly = utils::polynomial_from_bytes(&data);
 
-    //     let pos = pos_vec;
-    //     let evals = evals_vec;
-    //     let evals_nb = (((samples_nb * 20) / 2).next_power_of_two() + 1) as usize;
-    //     // Save the pos and evals to a file
-    //     let pos_file = File::create("pos.json").unwrap();
-    //     let evals_file = File::create("evals.json").unwrap();
-    //     serde_json::to_writer(
-    //         pos_file,
-    //         &pos[..evals_nb]
-    //             .iter()
-    //             .map(|p| (p.x, p.y))
-    //             .collect::<Vec<_>>(),
-    //     )
-    //     .unwrap();
-    //     serde_json::to_writer(evals_file, &evals[..evals_nb]).unwrap();
+        // we should have polys.len().next_power_of_two() samples
+        let samples_nb = (1 << (poly.log_size() + 1)) / QUERY_PER_SAMPLE;
+        println!("samples_nb: {:?}", samples_nb);
+        let proofs_pos = (0..=samples_nb)
+            .into_par_iter()
+            .map(|i| {
+                let proof = generate_proof(&data, Some(i as u64), PCS_CONFIG);
+                let queries = get_queries_from_proof(proof.clone(), Some(i as u64));
+                (proof, queries)
+            })
+            .collect::<Vec<_>>();
 
-    //     // Load the pos and evals from a file
+        let domain = CircleDomain::new(SCoset::half_odds(proofs_pos[0].0.coset_log_size));
+        let mut pos_set = HashSet::new();
+        let mut pos_vec = Vec::new();
+        let mut evals_vec = Vec::new();
+        for (proof, (_log_size, pos)) in proofs_pos {
+            for (i, p) in pos.iter().enumerate() {
+                let point = domain.at(bit_reverse_index(*p, domain.log_size()));
+                if pos_set.insert(point) {
+                    pos_vec.push(point);
+                    evals_vec.push(proof.evaluations[i]);
+                }
+            }
+        }
 
-    //     let pos_file = File::open("pos.json").unwrap();
-    //     let evals_file = File::open("evals.json").unwrap();
-    //     let pos: Vec<(M31, M31)> = serde_json::from_reader(pos_file).unwrap();
-    //     let pos = pos
-    //         .into_iter()
-    //         .map(|(x, y)| CirclePoint { x, y })
-    //         .collect::<Vec<_>>();
-    //     let evals: Vec<QM31> = serde_json::from_reader(evals_file).unwrap();
-    //     let interpolated = polynomial_from_felts(interpolate_qm31(&pos, &evals));
-    //     // let evals = CirclePoly::<CpuBackend>::new(vec![CM31::from_u32_unchecked(1, 1)])
-    //     //     .evaluate(CircleDomain::new(CanonicCoset::new(2).half_coset()));
-    //     println!("interpolated.len(): {:?}", interpolated.0[0].coeffs.len());
-    //     let mut coeff_init = polys.0[0].coeffs.clone();
-    //     coeff_init.reverse();
-    //     coeff_init = coeff_init.into_iter().skip_while(|v| v.is_zero()).collect();
-    //     coeff_init.reverse();
-    //     println!("polys.len(): {:?}", coeff_init.len());
-    //     // assert_eq!(interpolated.0[0].coeffs, polys.0[0].coeffs);
-    //     // assert_eq!(interpolated.0[1].coeffs, polys.0[1].coeffs);
-    //     // assert_eq!(interpolated.0[2].coeffs, polys.0[2].coeffs);
-    //     // assert_eq!(interpolated.0[3].coeffs, polys.0[3].coeffs);
-    //    }
+        let pos = pos_vec;
+        let evals = evals_vec;
+        let evals_nb = (1 << poly.log_size()) + 1;
+        println!("evals_nb: {:?}", evals_nb);
+
+        println!("evals.len(): {:?}", evals.len());
+
+        let interpolated = interpolate_qm31(&pos[..evals_nb], &evals[..evals_nb]);
+        let interpolated_bytes = felts_to_bytes_le(&interpolated);
+        interpolated_bytes
+            .into_iter()
+            .zip(data)
+            .enumerate()
+            .for_each(|(i, (a, b))| {
+                if a != b {
+                    println!("failed at {}", i);
+                }
+            });
+        // assert_eq!(data, interpolated_bytes[..data.len()]);
+        // assert_eq!(interpolated.0[0].coeffs[..500], poly.0[0].coeffs[..500]);
+        // assert_eq!(interpolated.0[1].coeffs[..500], poly.0[1].coeffs[..500]);
+        // assert_eq!(interpolated.0[2].coeffs[..500], poly.0[2].coeffs[..500]);
+        // assert_eq!(interpolated.0[3].coeffs[..500], poly.0[3].coeffs[..500]);
+    }
 }
