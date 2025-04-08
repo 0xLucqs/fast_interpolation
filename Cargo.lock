@@ -742,7 +742,6 @@ dependencies = [
 [[package]]
 name = "lambdaworks-math"
 version = "0.12.0"
-source = "git+https://github.com/lambdaclass/lambdaworks?branch=main#a7b22e18784dc80dc755644c0a6e310d544e1dee"
 dependencies = [
  "getrandom 0.2.15",
  "rand 0.8.5",
