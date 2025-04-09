@@ -4,9 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-ark-ff = "0.5"
-ark-poly = "0.5"
-ark-ff-optimized = { path = "../optimized-fields" }
 num-traits = "0.2"
 rayon = "1.8"
 bincode = "1.3"

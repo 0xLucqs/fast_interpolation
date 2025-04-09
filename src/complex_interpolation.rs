@@ -1,11 +1,16 @@
+use bitvec::domain;
 use lambdaworks_math::circle::cosets::Coset;
 
 use lambdaworks_math::circle::point::CirclePoint;
 use lambdaworks_math::circle::polynomial::{evaluate_cfft, interpolate_cfft};
+use lambdaworks_math::fft::polynomial::{evaluate_fft_cpu, interpolate_fft_cpu};
+use stwo_prover::core::backend::CpuBackend;
 use stwo_prover::core::circle::CirclePoint as SCirclePoint;
 
 use lambdaworks_math::field::element::FieldElement;
-use lambdaworks_math::field::fields::mersenne31::extensions::Degree2ExtensionField;
+use lambdaworks_math::field::fields::mersenne31::extensions::{
+    Degree2ExtensionField, Degree4ExtensionField,
+};
 
 use lambdaworks_math::field::fields::mersenne31::field::Mersenne31Field;
 use lambdaworks_math::polynomial::Polynomial;
@@ -16,11 +21,14 @@ use rayon::iter::{
 use stwo_prover::core::fields::m31::M31;
 
 use stwo_prover::core::fields::qm31::QM31;
-use stwo_prover::core::poly::circle::CanonicCoset;
+use stwo_prover::core::poly::circle::{CanonicCoset, CirclePoly, SecureCirclePoly};
 
-use crate::{build_subproduct_tree, eval_tree, linear_combination};
+use crate::{eval_tree, linear_combination};
 
-pub fn interpolate_qm31(pks: &[SCirclePoint<M31>], extvks: &[QM31]) -> Vec<M31> {
+pub fn interpolate_qm31(
+    pks: &[SCirclePoint<M31>],
+    extvks: &[QM31],
+) -> SecureCirclePoly<CpuBackend> {
     println!("pks: {:?}", pks.len());
     println!("extvks: {:?}", extvks.len());
     let zks = &pks
@@ -64,13 +72,12 @@ pub fn interpolate_qm31(pks: &[SCirclePoint<M31>], extvks: &[QM31]) -> Vec<M31> 
     );
 
     // concatenate the 4 columns
-    first_col
-        .into_iter()
-        .zip(second_col)
-        .zip(third_col)
-        .zip(fourth_col)
-        .flat_map(|(((a, b), c), d)| [a, b, c, d])
-        .collect::<Vec<_>>()
+    SecureCirclePoly([
+        CirclePoly::<CpuBackend>::new(first_col),
+        CirclePoly::<CpuBackend>::new(second_col),
+        CirclePoly::<CpuBackend>::new(third_col),
+        CirclePoly::<CpuBackend>::new(fourth_col),
+    ])
 }
 pub fn interpolate_cm31(
     zks: &[FieldElement<Degree2ExtensionField>],
@@ -207,6 +214,55 @@ pub fn fast_interpolation(
 
     poly + m * lambda
 }
+pub fn build_subproduct_tree(
+    u: &[FieldElement<Degree2ExtensionField>],
+) -> Vec<Vec<Polynomial<FieldElement<Degree2ExtensionField>>>> {
+    // Level 0: polynomials of the form (x - u[i])
+    let k = u.len().ilog2() as usize;
+    let mut tree: Vec<Vec<Polynomial<FieldElement<Degree2ExtensionField>>>> = Vec::with_capacity(k);
+    tree.push(
+        u.iter()
+            .map(|ui| Polynomial::new(&[-ui, FieldElement::<Degree2ExtensionField>::one()]))
+            .collect(),
+    );
+
+    for i in 1..=k {
+        let polys = (0..(1 << (k - i)))
+            .into_par_iter()
+            .map(|j| {
+                // let val = tree[i - 1][2 * j].mul_with_ref(&tree[i - 1][2 * j + 1]);
+                let domain_size = tree[i - 1][2 * j].degree() + tree[i - 1][2 * j + 1].degree() + 1;
+                let (p, q) = rayon::join(
+                    || {
+                        Polynomial::evaluate_fft::<Degree2ExtensionField>(
+                            &tree[i - 1][2 * j],
+                            1,
+                            Some(domain_size),
+                        )
+                        .unwrap()
+                    },
+                    || {
+                        Polynomial::evaluate_fft::<Degree2ExtensionField>(
+                            &tree[i - 1][2 * j + 1],
+                            1,
+                            Some(domain_size),
+                        )
+                        .unwrap()
+                    },
+                );
+                let r = p
+                    .into_par_iter()
+                    .zip_eq(q.into_par_iter())
+                    .map(|(a, b)| a * b)
+                    .collect::<Vec<_>>();
+
+                Polynomial::interpolate_fft::<Degree2ExtensionField>(&r).unwrap()
+            })
+            .collect::<Vec<_>>();
+        tree.push(polys);
+    }
+    tree
+}
 
 #[cfg(test)]
 mod tests {
@@ -250,7 +306,8 @@ mod tests {
         const POLY_SIZE: usize = 16;
 
         let one = BaseField::from(1);
-        let coeffs = (0..POLY_SIZE).map(|_| (one, one)).collect::<Vec<_>>();
+        let zero = BaseField::from(0);
+        let coeffs = (0..POLY_SIZE).map(|_| (one, zero)).collect::<Vec<_>>();
 
         println!("coeffs.len(): {:?}", coeffs.len());
 
@@ -414,6 +471,15 @@ mod tests {
         println!("evals.len(): {:?}", evals.len());
 
         let interpolated = interpolate_qm31(&pos[..evals_nb], &evals[..evals_nb]);
+        let interpolated = interpolated.0[0]
+            .clone()
+            .coeffs
+            .into_iter()
+            .zip(interpolated.0[1].coeffs.clone())
+            .zip(interpolated.0[2].coeffs.clone())
+            .zip(interpolated.0[3].coeffs.clone())
+            .flat_map(|(((a, b), c), d)| [a, b, c, d])
+            .collect::<Vec<_>>();
         let interpolated_bytes = felts_to_bytes_le(&interpolated);
         interpolated_bytes
             .into_iter()
